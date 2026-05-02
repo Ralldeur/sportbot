@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from database import register_user, save_bet, get_user_bets, get_user_stats
 from prediction_engine import engine, Prediction
-from data_fetcher import fetch_all_today_data
+from data_fetcher import fetch_todays_data_with_odds, format_kickoff
 from config import RISK_WARNING, RISK_LEVELS
 import json
 import logging
@@ -77,30 +77,37 @@ async def today_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text("⏳ Analyse des matchs du jour en cours...")
 
     try:
-        data = await fetch_all_today_data()
-        matches = data["football"]["matches"]
+        data = await fetch_todays_data_with_odds()
+        matches = data["matches"]
 
         if not matches:
             await msg.reply_text("😕 Aucun match disponible pour aujourd'hui.")
             return
 
-        # Générer des prédictions pour les 5 premiers matchs
-        predictions_text = "📅 *MATCHS DU JOUR*\n\n"
-        for i, match in enumerate(matches[:8], 1):
-            # Ici on simule les stats (en prod, on les récupère depuis l'API)
-            mock_data = _build_mock_match_data(match)
-            pred = engine.predict_football(mock_data)
+        predictions_text = "📅 *MATCHS DU JOUR*\n_Cotes réelles 1xBet & Melbet_\n\n"
+        shown = 0
+        for match in matches:
+            if shown >= 8:
+                break
+            if match["status"] not in ["NS", "TBD", "1H", "HT", "2H"]:
+                continue
+            pred = engine.predict_football(match)
             risk_emoji = RISK_EMOJIS.get(pred.risk_level, "⚪")
+            kickoff = format_kickoff(match.get("kickoff", ""))
+            bm = match.get("odds", {}).get("1_bookmaker", "1xBet/Melbet")
+            has_odds = match.get("has_real_odds", False)
+            odds_tag = f"sur {bm}" if has_odds else "_(cote estimée)_"
 
             predictions_text += (
-                f"*{i}. {pred.home_team} vs {pred.away_team}*\n"
-                f"🏆 {match.get('league', 'N/A')}\n"
+                f"*{shown+1}. {pred.home_team} vs {pred.away_team}*\n"
+                f"🏆 {match.get('league', 'N/A')} | 📅 {kickoff}\n"
                 f"📊 1: {pred.home_win_prob}% | X: {pred.draw_prob}% | 2: {pred.away_win_prob}%\n"
-                f"🎯 Sélection: *{_format_selection(pred.best_selection, pred.home_team, pred.away_team)}*\n"
-                f"💰 Cote: {pred.best_odds} | Confiance: {pred.confidence:.0f}%\n"
-                f"{risk_emoji} Risque: {pred.risk_level.replace('_', ' ')}\n"
+                f"🎯 *{_format_selection(pred.best_selection, pred.home_team, pred.away_team)}*\n"
+                f"💰 Cote: {pred.best_odds} {odds_tag}\n"
+                f"🔮 Confiance: {pred.confidence:.0f}% | {risk_emoji} {pred.risk_level}\n"
                 f"{'💎 VALUE BET' if pred.value_bet > 0.05 else ''}\n\n"
             )
+            shown += 1
 
         keyboard = [
             [InlineKeyboardButton("🔄 Actualiser", callback_data="refresh_today")],
@@ -125,15 +132,17 @@ async def bestbets_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text("🔍 Sélection des meilleurs paris du jour...")
 
     try:
-        data = await fetch_all_today_data()
-        matches = data["football"]["matches"]
+        data = await fetch_todays_data_with_odds()
+        matches = data["matches"]
 
-        # Calculer toutes les prédictions et filtrer les meilleures
         best_preds = []
-        for match in matches[:15]:
-            mock_data = _build_mock_match_data(match)
-            pred = engine.predict_football(mock_data)
-            if pred.confidence >= 60 and (pred.value_bet > 0 or pred.best_odds <= 2.0):
+        for match in matches:
+            if match["status"] not in ["NS", "TBD"]:
+                continue
+            pred = engine.predict_football(match)
+            if pred.confidence >= 55 and match.get("has_real_odds", False):
+                best_preds.append((pred, match))
+            elif pred.confidence >= 60:
                 best_preds.append((pred, match))
 
         best_preds.sort(key=lambda x: x[0].confidence, reverse=True)
@@ -151,13 +160,17 @@ async def bestbets_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             risk_emoji = RISK_EMOJIS.get(pred.risk_level, "⚪")
             value_tag = " 💎" if pred.value_bet > 0.05 else ""
 
+            bm = match.get("odds", {}).get("1_bookmaker", "1xBet/Melbet")
+            kickoff = format_kickoff(match.get("kickoff", ""))
             text += (
                 f"{'─'*30}\n"
                 f"⚽ *{pred.home_team} vs {pred.away_team}*\n"
+                f"📅 {kickoff} | 🏆 {match.get('league', '')}\n"
                 f"🎯 *{_format_selection(pred.best_selection, pred.home_team, pred.away_team)}*{value_tag}\n"
                 f"📈 Probabilité: {max(pred.home_win_prob, pred.draw_prob, pred.away_win_prob):.0f}%\n"
-                f"💰 Cote: {pred.best_odds} | Confiance: {pred.confidence:.0f}%\n"
-                f"{risk_emoji} Risque {pred.risk_level} | Mise conseillée: {pred.stake_pct}%\n\n"
+                f"💰 Cote: {pred.best_odds} sur *{bm}*\n"
+                f"🔮 Confiance: {pred.confidence:.0f}% | {risk_emoji} Risque {pred.risk_level}\n"
+                f"💼 Mise conseillée: {pred.stake_pct}% bankroll\n\n"
             )
             selections_for_bet.append({
                 "match_id": pred.match_id,
