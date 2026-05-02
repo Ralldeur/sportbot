@@ -16,15 +16,18 @@ API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 #  CACHE SYSTÈME - Évite les requêtes répétées
 # ══════════════════════════════════════════
 _cache = {}
-CACHE_DURATION_MINUTES = 30  # Cache valide 30 minutes
+CACHE_DURATION_MINUTES = 30  # Cache matchs: 30 minutes
+CACHE_DURATION_ODDS_HOURS = 2  # Cache cotes: 2 heures
 
 
-def _get_cache(key: str):
+def _get_cache(key: str, max_minutes: int = None):
     """Retourne la valeur du cache si encore valide."""
+    if max_minutes is None:
+        max_minutes = CACHE_DURATION_MINUTES
     if key in _cache:
         cached_at, value = _cache[key]
         age_minutes = (datetime.now() - cached_at).total_seconds() / 60
-        if age_minutes < CACHE_DURATION_MINUTES:
+        if age_minutes < max_minutes:
             logger.info(f"📦 Cache hit: {key} ({age_minutes:.0f}min)")
             return value
     return None
@@ -44,10 +47,11 @@ POPULAR_LEAGUES = {
     3: "Europa League", 12: "CAF Champions League", 182: "Ligue 1 CI",
 }
 
+# Seulement 3 sports populaires en CI = 3 requêtes au lieu de 8
 ODDS_SPORT_KEYS = [
-    "soccer_epl", "soccer_spain_la_liga", "soccer_germany_bundesliga",
-    "soccer_italy_serie_a", "soccer_france_ligue_one",
-    "soccer_uefa_champs_league", "basketball_nba", "mma_mixed_martial_arts",
+    "soccer_epl",                  # Premier League
+    "soccer_france_ligue_one",     # Ligue 1
+    "soccer_uefa_champs_league",   # Champions League
 ]
 
 
@@ -190,7 +194,8 @@ async def get_fixture_result(fixture_id):
 
 async def get_all_real_odds():
     cache_key = "all_odds"
-    cached = _get_cache(cache_key)
+    # Cotes: cache 2 heures (les cotes changent peu)
+    cached = _get_cache(cache_key, max_minutes=120)
     if cached is not None:
         return cached
 
@@ -314,7 +319,8 @@ async def get_full_match_data(match, all_odds):
 async def fetch_todays_data_with_odds():
     # Cache global de 30 minutes pour toute la page
     cache_key = f"today_full_{date.today()}"
-    cached = _get_cache(cache_key)
+    # Cache 1 heure pour les données complètes
+    cached = _get_cache(cache_key, max_minutes=60)
     if cached is not None:
         return cached
 
