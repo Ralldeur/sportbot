@@ -39,11 +39,11 @@ async def fetch(url, headers=None, params=None):
             return {}
 
 
-async def get_matches_today():
-    today = date.today().strftime("%Y-%m-%d")
+async def get_matches_for_date(target_date: str) -> list:
+    """Récupère les matchs pour une date donnée."""
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     data = await fetch(f"{API_FOOTBALL_BASE}/fixtures", headers=headers,
-                       params={"date": today, "timezone": "Africa/Abidjan"})
+                       params={"date": target_date, "timezone": "Africa/Abidjan"})
     matches = []
     for fixture in data.get("response", []):
         f = fixture["fixture"]
@@ -66,8 +66,33 @@ async def get_matches_today():
             "away_score": goals.get("away"),
             "is_popular": league.get("id", 0) in POPULAR_LEAGUES,
         })
-    logger.info(f"✅ {len(matches)} matchs récupérés")
     return matches
+
+
+async def get_matches_today():
+    """
+    Récupère les matchs disponibles pour parier.
+    Si peu de matchs dispo aujourd'hui (soir), prend aussi demain.
+    """
+    today = date.today().strftime("%Y-%m-%d")
+    tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    today_matches = await get_matches_for_date(today)
+
+    # Compter les matchs pas encore terminés
+    FINISHED = ["FT", "AET", "PEN", "AWD", "WO", "CANC", "ABD", "INT"]
+    available_today = [m for m in today_matches if m["status"] not in FINISHED]
+
+    all_matches = today_matches
+
+    # Si moins de 3 matchs disponibles aujourd'hui → ajouter demain
+    if len(available_today) < 3:
+        logger.info("⚠️ Peu de matchs aujourd'hui, ajout des matchs de demain...")
+        tomorrow_matches = await get_matches_for_date(tomorrow)
+        all_matches = today_matches + tomorrow_matches
+
+    logger.info(f"✅ {len(all_matches)} matchs récupérés (aujourd'hui + demain si nécessaire)")
+    return all_matches
 
 
 async def get_team_recent_form(team_id, last=5):
