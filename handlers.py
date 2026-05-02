@@ -172,6 +172,7 @@ async def bestbets_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔮 Confiance: {pred.confidence:.0f}% | {risk_emoji} Risque {pred.risk_level}\n"
                 f"💼 Mise conseillée: {pred.stake_pct}% bankroll\n\n"
             )
+            bm_name = match.get("odds", {}).get("1_bookmaker", "1xBet")
             selections_for_bet.append({
                 "match_id": pred.match_id,
                 "sport": "football",
@@ -180,7 +181,9 @@ async def bestbets_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "selection": pred.best_selection,
                 "odds": pred.best_odds,
                 "kickoff": match.get("kickoff", ""),
-                "probability": max(pred.home_win_prob, pred.draw_prob, pred.away_win_prob)
+                "probability": max(pred.home_win_prob, pred.draw_prob, pred.away_win_prob),
+                "bookmaker": bm_name,
+                "league": match.get("league", ""),
             })
 
         # Sauvegarder le coupon dans la DB
@@ -284,16 +287,100 @@ async def customodds_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                               parse_mode=ParseMode.MARKDOWN)
         return
 
-    await msg.reply_text(f"⏳ Construction d'un combiné à cote ~{target_odds}...")
+    await msg.reply_text(f"⏳ Construction d'un combiné à cote ~{target_odds}...\n_Récupération des vrais matchs 1xBet/Melbet_")
 
-    # Simuler des matchs disponibles (en prod, on récupère depuis l'API)
-    mock_matches = _generate_mock_matches_pool(20)
-    combo = engine.build_combo(target_odds, mock_matches, mode="balanced")
+    # Récupérer les vrais matchs avec leurs vraies cotes
+    data = await fetch_todays_data_with_odds()
+    real_matches = data["matches"]
+    all_odds = data["all_odds"]
 
+    # Construire le pool depuis les vrais matchs + cotes
+    match_pool = []
+    for m in real_matches:
+        if m["status"] not in ["NS", "TBD"]:
+            continue
+        odds = m.get("odds", {})
+        # Ajouter chaque sélection disponible comme entrée du pool
+        for sel, sel_label in [("1", "Victoire " + m["home_team"]),
+                                ("X2", m["away_team"] + " ou Nul"),
+                                ("1X", m["home_team"] + " ou Nul"),
+                                ("Over 2.5", "Over 2.5 buts")]:
+            odds_val = odds.get(sel, 0)
+            if odds_val and odds_val > 1.1:
+                # Prédiction pour cette sélection
+                pred = engine.predict_football(m)
+                prob = (pred.home_win_prob if sel == "1"
+                        else pred.away_win_prob if sel == "2"
+                        else pred.home_win_prob + pred.draw_prob if sel == "1X"
+                        else pred.away_win_prob + pred.draw_prob if sel == "X2"
+                        else 55.0)
+                bm = odds.get("1_bookmaker", "1xBet")
+                match_pool.append({
+                    "match_id": m["match_id"],
+                    "sport": "football",
+                    "home_team": m["home_team"],
+                    "away_team": m["away_team"],
+                    "league": m.get("league", ""),
+                    "selection": sel,
+                    "odds": odds_val,
+                    "probability": round(prob, 1),
+                    "kickoff": m.get("kickoff", ""),
+                    "bookmaker": bm,
+                    "reason": f"Analyse statistique - {m.get('league', '')}",
+                })
+
+    # Si pas assez de vrais matchs, compléter avec des matchs futurs des cotes API
+    for event in all_odds:
+        home = event.get("home_team", "")
+        away = event.get("away_team", "")
+        sport = event.get("sport", "football")
+        kickoff = event.get("kickoff", "")
+        for bm_name, bm_data in event.get("bookmakers", {}).items():
+            for team, odds_val in bm_data.get("h2h", {}).items():
+                if odds_val and odds_val > 1.1:
+                    is_home = team.lower() in home.lower() or home.lower() in team.lower()
+                    is_away = team.lower() in away.lower() or away.lower() in team.lower()
+                    sel = "1" if is_home else ("2" if is_away else None)
+                    if not sel:
+                        continue
+                    prob = round(100 / odds_val * 0.92, 1)
+                    sport_clean = ("football" if "soccer" in sport
+                                   else "basketball" if "basketball" in sport
+                                   else "tennis" if "tennis" in sport
+                                   else "mma" if "mma" in sport else "football")
+                    match_pool.append({
+                        "match_id": f"odds_{home}_{away}",
+                        "sport": sport_clean,
+                        "home_team": home,
+                        "away_team": away,
+                        "selection": sel,
+                        "odds": odds_val,
+                        "probability": prob,
+                        "kickoff": kickoff,
+                        "bookmaker": bm_name,
+                        "reason": f"Cote disponible sur {bm_name}",
+                    })
+
+    # Dédupliquer
+    seen = set()
+    unique_pool = []
+    for m in match_pool:
+        key = f"{m['home_team']}_{m['away_team']}_{m['selection']}"
+        if key not in seen:
+            seen.add(key)
+            unique_pool.append(m)
+
+    if not unique_pool:
+        await msg.reply_text("😕 Pas assez de matchs disponibles sur 1xBet/Melbet pour l'instant. Réessaie plus tard.")
+        return
+
+    combo = engine.build_combo(target_odds, unique_pool, mode="balanced")
     await _send_combo_result(msg, combo, target_odds)
 
-    # Proposer les versions SAFE et AGRESSIVE
+    # Sauvegarder pour usage ultérieur
     context.user_data["last_target_odds"] = target_odds
+    context.user_data["last_match_pool"] = unique_pool
+    context.user_data["last_combo"] = combo
     keyboard = [
         [InlineKeyboardButton("🛡️ Version SAFE", callback_data="odds_safe"),
          InlineKeyboardButton("🔥 Version AGGRESSIVE", callback_data="odds_aggressive")],
@@ -307,15 +394,33 @@ async def customodds_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def customodds_safe(query, context: ContextTypes.DEFAULT_TYPE):
     target_odds = context.user_data.get("last_target_odds", 10)
-    mock_matches = _generate_mock_matches_pool(20)
-    combo = engine.build_combo(target_odds, mock_matches, mode="safe")
+    pool = context.user_data.get("last_match_pool", [])
+    if not pool:
+        data = await fetch_todays_data_with_odds()
+        pool = [{"match_id": m["match_id"], "sport": "football",
+                 "home_team": m["home_team"], "away_team": m["away_team"],
+                 "selection": "1X", "odds": m.get("odds", {}).get("1X", 1.3),
+                 "probability": 70, "kickoff": m.get("kickoff", ""),
+                 "bookmaker": "1xBet", "reason": "Double chance sécurisée"}
+                for m in data["matches"] if m.get("has_real_odds")]
+    combo = engine.build_combo(target_odds, pool, mode="safe")
+    context.user_data["last_combo"] = combo
     await _send_combo_result(query.message, combo, target_odds, mode="SAFE")
 
 
 async def customodds_aggressive(query, context: ContextTypes.DEFAULT_TYPE):
     target_odds = context.user_data.get("last_target_odds", 10)
-    mock_matches = _generate_mock_matches_pool(20)
-    combo = engine.build_combo(target_odds, mock_matches, mode="aggressive")
+    pool = context.user_data.get("last_match_pool", [])
+    if not pool:
+        data = await fetch_todays_data_with_odds()
+        pool = [{"match_id": m["match_id"], "sport": "football",
+                 "home_team": m["home_team"], "away_team": m["away_team"],
+                 "selection": "1", "odds": m.get("odds", {}).get("1", 2.0),
+                 "probability": 55, "kickoff": m.get("kickoff", ""),
+                 "bookmaker": "1xBet", "reason": "Pari offensif"}
+                for m in data["matches"] if m.get("has_real_odds")]
+    combo = engine.build_combo(target_odds, pool, mode="aggressive")
+    context.user_data["last_combo"] = combo
     await _send_combo_result(query.message, combo, target_odds, mode="AGRESSIVE")
 
 
@@ -343,7 +448,7 @@ async def _send_combo_result(msg, combo: dict, target_odds: float, mode: str = "
             f"*{i}. {sel.get('home_team')} vs {sel.get('away_team')}*\n"
             f"   {sport_emoji} {sport.capitalize()} | 📅 {date_str}\n"
             f"   🎯 Sélection: {_format_selection(sel.get('selection', '1'), sel.get('home_team', ''), sel.get('away_team', ''))}\n"
-            f"   💰 Cote: {sel.get('odds', 0):.2f}\n"
+            f"   💰 Cote: {sel.get('odds', 0):.2f} sur *{sel.get('bookmaker', '1xBet/Melbet')}*\n"
             f"   📊 Prob: {sel.get('probability', 0):.0f}%\n"
             f"   💡 {sel.get('reason', 'Analyse statistique favorable')}\n\n"
         )
@@ -415,18 +520,24 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = "📋 *TES 5 DERNIERS COUPONS*\n\n"
+    status_map = {
+        "won":     "✅ GAGNÉ",
+        "lost":    "❌ PERDU",
+        "pending": "⏳ En attente des résultats",
+        "void":    "🔄 Annulé",
+    }
     for bet in bets:
-        status_emoji = {"won": "✅", "lost": "❌", "pending": "⏳", "void": "🔄"}.get(
-            bet["status"], "⏳")
+        status_label = status_map.get(bet["status"], "⏳ En attente")
+        emoji = status_label.split()[0]
         text += (
-            f"{status_emoji} *Coupon #{bet['id']}*\n"
-            f"📅 {bet['created_at'][:10]}\n"
-            f"⚽ {bet['sport'].capitalize()}\n"
-            f"💰 Cote: {bet['total_odds']} | Prob: {bet['probability']}%\n"
-            f"Statut: *{bet['status'].upper()}*\n"
-            f"{'─'*20}\n\n"
+            f"{emoji} *Coupon #{bet['id']}*\n"
+            f"📅 {bet['created_at'][:10]} | 🏅 {bet['sport'].capitalize()}\n"
+            f"💰 Cote: *{bet['total_odds']}* | Prob: {bet['probability']}%\n"
+            f"📌 {status_label}\n"
+            f"{'─'*22}\n\n"
         )
 
+    text += "_Les coupons ⏳ seront mis à jour automatiquement après les matchs._"
     msg = update.message or (update.callback_query.message if update.callback_query else None)
     await msg.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -603,11 +714,39 @@ def _generate_mock_matches_pool(n: int) -> list:
     return matches
 
 async def save_combo_handler(query, context: ContextTypes.DEFAULT_TYPE):
-    """Sauvegarde le dernier combiné généré."""
-    await query.message.reply_text(
-        "✅ *Coupon sauvegardé !*\n\n"
-        "Je vérifierai automatiquement les résultats après les matchs "
-        "et t'enverrai une notification.\n\n"
-        "📋 Retrouve-le avec /historique",
-        parse_mode="Markdown"
-    )
+    """Sauvegarde le dernier combiné généré en base de données."""
+    user_id = query.from_user.id
+    last_combo = context.user_data.get("last_combo")
+
+    if not last_combo:
+        await query.message.reply_text(
+            "❌ Aucun combiné à sauvegarder. Génère d'abord un combiné avec /customodds",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        bet_id = save_bet(user_id, {
+            "sport": "multi-sports",
+            "matches": [s.get("match_id", "") for s in last_combo["selections"]],
+            "selections": last_combo["selections"],
+            "total_odds": last_combo["total_odds"],
+            "risk_level": last_combo["risk_level"],
+            "probability": last_combo["probability"],
+            "stake_advice": last_combo.get("stake_advice", 1.0),
+        })
+        await query.message.reply_text(
+            f"✅ *Coupon #{bet_id} sauvegardé !*\n\n"
+            f"📊 Cote totale: *{last_combo['total_odds']}*\n"
+            f"🎲 Probabilité: *{last_combo['probability']}%*\n"
+            f"🔢 {last_combo['n_matches']} sélections\n\n"
+            f"Je vérifierai les résultats automatiquement après les matchs "
+            f"et t'enverrai une notification.\n\n"
+            f"📋 Retrouve-le dans /historique",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await query.message.reply_text(
+            "❌ Erreur lors de la sauvegarde. Réessaie.",
+            parse_mode="Markdown"
+        )
