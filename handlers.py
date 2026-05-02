@@ -81,15 +81,27 @@ async def today_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         matches = data["matches"]
 
         if not matches:
-            await msg.reply_text("😕 Aucun match disponible pour aujourd'hui.")
+            await msg.reply_text(
+                "😕 Aucun match trouvé pour aujourd'hui.\n\n"
+                "💡 _Les matchs sont mis à jour chaque matin. "
+                "Reviens demain ou utilise /bestbets pour les prochains jours._",
+                parse_mode=ParseMode.MARKDOWN
+            )
             return
 
         predictions_text = "📅 *MATCHS DU JOUR*\n_Cotes réelles 1xBet & Melbet_\n\n"
+        # Trier par kickoff
+        import re
+        def sort_key(m):
+            return m.get("kickoff", "")
+        matches_sorted = sorted(matches, key=sort_key)
+
         shown = 0
-        for match in matches:
+        for match in matches_sorted:
             if shown >= 8:
                 break
-            if match["status"] not in ["NS", "TBD", "1H", "HT", "2H"]:
+            status = match.get("status", "NS")
+            if status in ["FT", "AET", "PEN", "AWD", "WO", "CANC", "ABD", "INT"]:
                 continue
             pred = engine.predict_football(match)
             risk_emoji = RISK_EMOJIS.get(pred.risk_level, "⚪")
@@ -137,7 +149,9 @@ async def bestbets_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         best_preds = []
         for match in matches:
-            if match["status"] not in ["NS", "TBD"]:
+            status = match.get("status", "NS")
+            # On prend seulement les matchs pas encore commencés pour les paris
+            if status in ["FT", "AET", "PEN", "AWD", "WO", "CANC", "ABD", "INT", "1H", "HT", "2H", "ET", "P"]:
                 continue
             pred = engine.predict_football(match)
             if pred.confidence >= 55 and match.get("has_real_odds", False):
