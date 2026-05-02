@@ -11,6 +11,29 @@ import logging
 logger = logging.getLogger(__name__)
 
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
+
+# ══════════════════════════════════════════
+#  CACHE SYSTÈME - Évite les requêtes répétées
+# ══════════════════════════════════════════
+_cache = {}
+CACHE_DURATION_MINUTES = 30  # Cache valide 30 minutes
+
+
+def _get_cache(key: str):
+    """Retourne la valeur du cache si encore valide."""
+    if key in _cache:
+        cached_at, value = _cache[key]
+        age_minutes = (datetime.now() - cached_at).total_seconds() / 60
+        if age_minutes < CACHE_DURATION_MINUTES:
+            logger.info(f"📦 Cache hit: {key} ({age_minutes:.0f}min)")
+            return value
+    return None
+
+
+def _set_cache(key: str, value):
+    """Stocke une valeur dans le cache."""
+    _cache[key] = (datetime.now(), value)
+    logger.info(f"💾 Cache set: {key}")
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
 TARGET_BOOKMAKERS = ["onexbet", "melbet"]
@@ -40,7 +63,12 @@ async def fetch(url, headers=None, params=None):
 
 
 async def get_matches_for_date(target_date: str) -> list:
-    """Récupère les matchs pour une date donnée."""
+    """Récupère les matchs pour une date donnée (avec cache 30min)."""
+    cache_key = f"matches_{target_date}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     data = await fetch(f"{API_FOOTBALL_BASE}/fixtures", headers=headers,
                        params={"date": target_date, "timezone": "Africa/Abidjan"})
@@ -96,6 +124,11 @@ async def get_matches_today():
 
 
 async def get_team_recent_form(team_id, last=5):
+    cache_key = f"form_{team_id}_{last}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     data = await fetch(f"{API_FOOTBALL_BASE}/fixtures", headers=headers,
                        params={"team": team_id, "last": last, "status": "FT"})
@@ -116,11 +149,13 @@ async def get_team_recent_form(team_id, last=5):
         goals_for.append(scored)
         goals_against.append(conceded)
         form += "V" if won is True else ("D" if won is False else "N")
-    return {
+    result = {
         "form": form,
         "goals_for_avg": round(sum(goals_for)/len(goals_for), 2) if goals_for else 1.2,
         "goals_against_avg": round(sum(goals_against)/len(goals_against), 2) if goals_against else 1.2,
     }
+    _set_cache(f"form_{team_id}_{last}", result)
+    return result
 
 
 async def get_head_to_head(team1_id, team2_id, last=5):
@@ -154,6 +189,11 @@ async def get_fixture_result(fixture_id):
 
 
 async def get_all_real_odds():
+    cache_key = "all_odds"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+
     all_odds = []
     for sport_key in ODDS_SPORT_KEYS:
         params = {
@@ -187,6 +227,7 @@ async def get_all_real_odds():
                 all_odds.append(match_odds)
         await asyncio.sleep(0.5)
     logger.info(f"✅ {len(all_odds)} événements avec cotes 1xBet/Melbet")
+    _set_cache("all_odds", all_odds)
     return all_odds
 
 
@@ -271,11 +312,19 @@ async def get_full_match_data(match, all_odds):
 
 
 async def fetch_todays_data_with_odds():
+    # Cache global de 30 minutes pour toute la page
+    cache_key = f"today_full_{date.today()}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+
     logger.info("📡 Récupération des données du jour...")
     matches, all_odds = await asyncio.gather(get_matches_today(), get_all_real_odds())
 
-    popular = [m for m in matches if m.get("is_popular")][:8]
-    other = [m for m in matches if not m.get("is_popular")][:3]
+    # Limiter à 5 matchs max pour économiser les requêtes API
+    # (100 req/jour gratuit = ~5 matchs avec H2H + forme)
+    popular = [m for m in matches if m.get("is_popular")][:4]
+    other = [m for m in matches if not m.get("is_popular")][:1]
     to_enrich = popular + other
 
     enriched = []
@@ -291,8 +340,10 @@ async def fetch_todays_data_with_odds():
                              "home_injuries": [], "away_injuries": []})
 
     logger.info(f"✅ {len(enriched)} matchs prêts")
-    return {"matches": enriched, "all_odds": all_odds,
-            "fetched_at": datetime.now().isoformat()}
+    result = {"matches": enriched, "all_odds": all_odds,
+              "fetched_at": datetime.now().isoformat()}
+    _set_cache(f"today_full_{date.today()}", result)
+    return result
 
 
 def calculate_implied_probability(odds):
