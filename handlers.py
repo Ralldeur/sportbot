@@ -232,37 +232,64 @@ async def bestbets_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════
 
 async def safe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message or update.callback_query.message
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    await msg.reply_text("⏳ Recherche des paris sûrs du jour...")
 
-    text = (
-        "🛡️ *PARIS SÛRS DU JOUR*\n"
-        "_Cotes basses, probabilité élevée, risque minimum_\n\n"
-        "Critères: Cote ≤ 1.80 | Confiance ≥ 65%\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🟢 *Paris double chance recommandés:*\n\n"
-        "⚽ *Real Madrid vs Getafe*\n"
-        "🎯 Real Madrid ou Nul (1X)\n"
-        "💰 Cote: 1.25 | Prob: 88%\n"
-        "Confiance: 82% | Mise: 4% bankroll\n\n"
-        "🏀 *Lakers vs Knicks*\n"
-        "🎯 Lakers victoire\n"
-        "💰 Cote: 1.55 | Prob: 71%\n"
-        "Confiance: 68% | Mise: 3% bankroll\n\n"
-        "⚽ *Bayern vs Hoffenheim*\n"
-        "🎯 Bayern ou Nul (1X)\n"
-        "💰 Cote: 1.30 | Prob: 85%\n"
-        "Confiance: 78% | Mise: 4% bankroll\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💡 _Les paris sûrs = petites cotes mais haut taux de réussite._\n"
-        "⚠️ _Aucun pari n'est garanti à 100%_"
-    )
+    try:
+        data = await fetch_todays_data_with_odds()
+        matches = data["matches"]
 
-    keyboard = [
-        [InlineKeyboardButton("🏆 Voir meilleurs paris", callback_data="bestbets")],
-        [InlineKeyboardButton("🎯 Combiné personnalisé", callback_data="customodds")],
-    ]
-    await msg.reply_text(text, parse_mode=ParseMode.MARKDOWN,
-                          reply_markup=InlineKeyboardMarkup(keyboard))
+        FINISHED = ["FT", "AET", "PEN", "AWD", "WO", "CANC", "ABD", "INT"]
+        safe_preds = []
+        for match in matches:
+            if match.get("status", "NS") in FINISHED:
+                continue
+            pred = engine.predict_football(match)
+            if pred.best_odds <= 1.80 and pred.confidence >= 60:
+                safe_preds.append((pred, match))
+
+        safe_preds.sort(key=lambda x: x[0].confidence, reverse=True)
+
+        text = (
+            "🛡️ *PARIS SÛRS DU JOUR*\n"
+            "_Cotes réelles 1xBet & Melbet_\n"
+            "_Cote ≤ 1.80 | Confiance ≥ 60%_\n\n"
+        )
+
+        if not safe_preds:
+            text += (
+                "😕 Pas de paris sûrs disponibles maintenant.\n\n"
+                "💡 _Réessaie demain matin quand les nouvelles_\n"
+                "_cotes sont disponibles._"
+            )
+        else:
+            text += "🟢 *Paris recommandés:*\n\n"
+            for pred, match in safe_preds[:5]:
+                bm = match.get("odds", {}).get("1_bookmaker", "1xBet")
+                kickoff = format_kickoff(match.get("kickoff", ""))
+                sport_emoji = "⚽" if match["sport"] == "football" else "🏀"
+                text += (
+                    f"{sport_emoji} *{pred.home_team} vs {pred.away_team}*\n"
+                    f"📅 {kickoff} | 🏆 {match.get('league', '')}\n"
+                    f"🎯 {_format_selection(pred.best_selection, pred.home_team, pred.away_team)}\n"
+                    f"💰 Cote: {pred.best_odds} sur *{bm}*\n"
+                    f"🔮 Confiance: {pred.confidence:.0f}% | Mise: {pred.stake_pct}% bankroll\n\n"
+                )
+
+        text += "━━━━━━━━━━━━━━━━━━━━━━\n"
+        text += "💡 _Petites cotes = haut taux de réussite._\n"
+        text += "⚠️ _Aucun pari n\'est garanti à 100%_"
+
+        keyboard = [
+            [InlineKeyboardButton("🏆 Voir meilleurs paris", callback_data="bestbets")],
+            [InlineKeyboardButton("🎯 Combiné personnalisé", callback_data="customodds")],
+        ]
+        await msg.reply_text(text, parse_mode=ParseMode.MARKDOWN,
+                              reply_markup=InlineKeyboardMarkup(keyboard))
+
+    except Exception as e:
+        logger.error(f"Error in safe_handler: {e}")
+        await msg.reply_text("❌ Erreur. Réessaie dans quelques minutes.")
 
 
 # ══════════════════════════════════════════
