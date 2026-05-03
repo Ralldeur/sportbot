@@ -201,6 +201,15 @@ async def bestbets_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
 
         # Sauvegarder le coupon dans la DB
+        user_id_save = update.effective_user.id
+        context.bot_data[f"last_combo_{user_id_save}"] = {
+            "selections": selections_for_bet,
+            "total_odds": round(sum(s["odds"] for s in selections_for_bet) / len(selections_for_bet), 2),
+            "risk_level": "moyen",
+            "probability": round(sum(s["probability"] for s in selections_for_bet) / len(selections_for_bet), 1),
+            "stake_advice": 2.0,
+            "n_matches": len(selections_for_bet),
+        }
         bet_id = save_bet(update.effective_user.id, {
             "sport": "football",
             "matches": [m.get("match_id", "") for _, m in top5],
@@ -421,7 +430,7 @@ async def customodds_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Sauvegarder pour usage ultérieur
     context.user_data["last_target_odds"] = target_odds
     context.user_data["last_match_pool"] = unique_pool
-    context.user_data["last_combo"] = combo
+    context.bot_data[f"last_combo_{update.effective_user.id if hasattr(update, 'effective_user') and update.effective_user else 'unknown'}"] = combo
     keyboard = [
         [InlineKeyboardButton("🛡️ Version SAFE", callback_data="odds_safe"),
          InlineKeyboardButton("🔥 Version AGGRESSIVE", callback_data="odds_aggressive")],
@@ -435,7 +444,7 @@ async def customodds_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def customodds_safe(query, context: ContextTypes.DEFAULT_TYPE):
     target_odds = context.user_data.get("last_target_odds", 10)
-    pool = context.user_data.get("last_match_pool", [])
+    pool = context.bot_data.get(f"last_pool_{query.from_user.id}", [])
     if not pool:
         data = await fetch_todays_data_with_odds()
         pool = [{"match_id": m["match_id"], "sport": "football",
@@ -445,13 +454,13 @@ async def customodds_safe(query, context: ContextTypes.DEFAULT_TYPE):
                  "bookmaker": "1xBet", "reason": "Double chance sécurisée"}
                 for m in data["matches"] if m.get("has_real_odds")]
     combo = engine.build_combo(target_odds, pool, mode="safe")
-    context.user_data["last_combo"] = combo
+    context.bot_data[f"last_combo_{update.effective_user.id if hasattr(update, 'effective_user') and update.effective_user else 'unknown'}"] = combo
     await _send_combo_result(query.message, combo, target_odds, mode="SAFE")
 
 
 async def customodds_aggressive(query, context: ContextTypes.DEFAULT_TYPE):
     target_odds = context.user_data.get("last_target_odds", 10)
-    pool = context.user_data.get("last_match_pool", [])
+    pool = context.bot_data.get(f"last_pool_{query.from_user.id}", [])
     if not pool:
         data = await fetch_todays_data_with_odds()
         pool = [{"match_id": m["match_id"], "sport": "football",
@@ -461,7 +470,7 @@ async def customodds_aggressive(query, context: ContextTypes.DEFAULT_TYPE):
                  "bookmaker": "1xBet", "reason": "Pari offensif"}
                 for m in data["matches"] if m.get("has_real_odds")]
     combo = engine.build_combo(target_odds, pool, mode="aggressive")
-    context.user_data["last_combo"] = combo
+    context.bot_data[f"last_combo_{update.effective_user.id if hasattr(update, 'effective_user') and update.effective_user else 'unknown'}"] = combo
     await _send_combo_result(query.message, combo, target_odds, mode="AGRESSIVE")
 
 
@@ -772,7 +781,7 @@ def _generate_mock_matches_pool(n: int) -> list:
 async def save_combo_handler(query, context: ContextTypes.DEFAULT_TYPE):
     """Sauvegarde le dernier combiné généré en base de données."""
     user_id = query.from_user.id
-    last_combo = context.user_data.get("last_combo")
+    last_combo = context.bot_data.get(f"last_combo_{user_id}")
 
     if not last_combo:
         await query.message.reply_text(
