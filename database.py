@@ -12,7 +12,10 @@ logger = logging.getLogger(__name__)
 # Détection automatique: PostgreSQL sur Railway, SQLite en local
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-if DATABASE_URL and DATABASE_URL.startswith("postgres"):
+# Railway donne parfois "postgres://" au lieu de "postgresql://"
+if DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
     # PostgreSQL sur Railway
     import psycopg2
     import psycopg2.extras

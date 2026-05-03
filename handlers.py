@@ -428,9 +428,10 @@ async def customodds_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await _send_combo_result(msg, combo, target_odds)
 
     # Sauvegarder pour usage ultérieur
-    context.user_data["last_target_odds"] = target_odds
-    context.user_data["last_match_pool"] = unique_pool
-    context.bot_data[f"last_combo_{update.effective_user.id if hasattr(update, 'effective_user') and update.effective_user else 'unknown'}"] = combo
+    user_id = update.effective_user.id
+    context.bot_data[f"last_odds_{user_id}"] = target_odds
+    context.bot_data[f"last_pool_{user_id}"] = unique_pool
+    context.bot_data[f"last_combo_{user_id}"] = combo
     keyboard = [
         [InlineKeyboardButton("🛡️ Version SAFE", callback_data="odds_safe"),
          InlineKeyboardButton("🔥 Version AGGRESSIVE", callback_data="odds_aggressive")],
@@ -443,8 +444,9 @@ async def customodds_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def customodds_safe(query, context: ContextTypes.DEFAULT_TYPE):
-    target_odds = context.user_data.get("last_target_odds", 10)
-    pool = context.bot_data.get(f"last_pool_{query.from_user.id}", [])
+    user_id = query.from_user.id
+    target_odds = context.bot_data.get(f"last_odds_{user_id}", 10)
+    pool = context.bot_data.get(f"last_pool_{user_id}", [])
     if not pool:
         data = await fetch_todays_data_with_odds()
         pool = [{"match_id": m["match_id"], "sport": "football",
@@ -454,13 +456,14 @@ async def customodds_safe(query, context: ContextTypes.DEFAULT_TYPE):
                  "bookmaker": "1xBet", "reason": "Double chance sécurisée"}
                 for m in data["matches"] if m.get("has_real_odds")]
     combo = engine.build_combo(target_odds, pool, mode="safe")
-    context.bot_data[f"last_combo_{update.effective_user.id if hasattr(update, 'effective_user') and update.effective_user else 'unknown'}"] = combo
+    context.bot_data[f"last_combo_{user_id}"] = combo
     await _send_combo_result(query.message, combo, target_odds, mode="SAFE")
 
 
 async def customodds_aggressive(query, context: ContextTypes.DEFAULT_TYPE):
-    target_odds = context.user_data.get("last_target_odds", 10)
-    pool = context.bot_data.get(f"last_pool_{query.from_user.id}", [])
+    user_id = query.from_user.id
+    target_odds = context.bot_data.get(f"last_odds_{user_id}", 10)
+    pool = context.bot_data.get(f"last_pool_{user_id}", [])
     if not pool:
         data = await fetch_todays_data_with_odds()
         pool = [{"match_id": m["match_id"], "sport": "football",
@@ -470,8 +473,9 @@ async def customodds_aggressive(query, context: ContextTypes.DEFAULT_TYPE):
                  "bookmaker": "1xBet", "reason": "Pari offensif"}
                 for m in data["matches"] if m.get("has_real_odds")]
     combo = engine.build_combo(target_odds, pool, mode="aggressive")
-    context.bot_data[f"last_combo_{update.effective_user.id if hasattr(update, 'effective_user') and update.effective_user else 'unknown'}"] = combo
+    context.bot_data[f"last_combo_{user_id}"] = combo
     await _send_combo_result(query.message, combo, target_odds, mode="AGRESSIVE")
+
 
 
 async def _send_combo_result(msg, combo: dict, target_odds: float, mode: str = "ÉQUILIBRÉ"):
