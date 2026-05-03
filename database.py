@@ -43,6 +43,11 @@ def get_connection():
 
 def init_db():
     """Initialise toutes les tables."""
+    # Log pour debug
+    logger.info(f"🗄️ DATABASE_URL présente: {bool(DATABASE_URL)}")
+    logger.info(f"🗄️ USE_POSTGRES: {USE_POSTGRES}")
+    if DATABASE_URL:
+        logger.info(f"🗄️ URL commence par: {DATABASE_URL[:20]}...")
     conn = get_connection()
     try:
         if USE_POSTGRES:
@@ -178,6 +183,7 @@ def register_user(user_id: int, username: str, first_name: str):
 
 def save_bet(user_id: int, bet_data: dict) -> int:
     """Sauvegarde un coupon et retourne son ID."""
+    logger.info(f"💾 Sauvegarde coupon pour user {user_id} - USE_POSTGRES={USE_POSTGRES}")
     conn = get_connection()
     try:
         c = conn.cursor()
@@ -244,6 +250,7 @@ def save_bet(user_id: int, bet_data: dict) -> int:
 
 
 def get_user_bets(user_id: int, limit: int = 10) -> list:
+    logger.info(f"📋 Récupération coupons user {user_id} - USE_POSTGRES={USE_POSTGRES}")
     conn = get_connection()
     try:
         c = conn.cursor()
