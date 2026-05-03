@@ -394,17 +394,57 @@ async def fetch_todays_data_with_odds():
         return cached
 
     logger.info("📡 Récupération des données du jour...")
-    matches, all_odds = await asyncio.gather(get_matches_today(), get_all_real_odds())
 
-    to_enrich = matches[:3]  # Max 3 pour respecter rate limit
+    try:
+        matches = await get_matches_today()
+    except Exception as e:
+        logger.error(f"Error getting matches: {e}")
+        matches = []
+
+    try:
+        all_odds = await get_all_real_odds()
+    except Exception as e:
+        logger.error(f"Error getting odds: {e}")
+        all_odds = []
+
+    # Si pas de matchs → retourner vide proprement
+    if not matches:
+        return {"matches": [], "all_odds": all_odds,
+                "fetched_at": datetime.now().isoformat()}
+
+    # Enrichir seulement le premier match pour économiser le rate limit
+    # Les autres matchs sont affichés avec les cotes seulement
     enriched = []
-    for match in to_enrich:
+    for i, match in enumerate(matches[:5]):
         try:
-            full = await get_full_match_data(match, all_odds)
-            enriched.append(full)
-            await asyncio.sleep(6)  # 10 req/min = 1 req/6sec
+            if i == 0:
+                # Enrichissement complet pour le premier match seulement
+                full = await get_full_match_data(match, all_odds)
+                enriched.append(full)
+            else:
+                # Pour les autres: juste les cotes, pas de forme ni H2H
+                real_odds = find_best_odds(all_odds, match["home_team"], match["away_team"])
+                odds_map = {}
+                if real_odds["1"]["odds"] > 0:
+                    odds_map["1"] = real_odds["1"]["odds"]
+                    odds_map["1_bookmaker"] = real_odds["1"]["bookmaker"]
+                if real_odds["X"]["odds"] > 0:
+                    odds_map["X"] = real_odds["X"]["odds"]
+                if real_odds["2"]["odds"] > 0:
+                    odds_map["2"] = real_odds["2"]["odds"]
+                    odds_map["2_bookmaker"] = real_odds["2"]["bookmaker"]
+                enriched.append({
+                    **match,
+                    "odds": odds_map,
+                    "has_real_odds": len(odds_map) > 0,
+                    "home_stats": {"form": "", "goals_for_avg": 1.3, "goals_against_avg": 1.2},
+                    "away_stats": {"form": "", "goals_for_avg": 1.1, "goals_against_avg": 1.3},
+                    "h2h": [],
+                    "home_injuries": [],
+                    "away_injuries": [],
+                })
         except Exception as e:
-            logger.error(f"Error enriching {match['match_id']}: {e}")
+            logger.error(f"Error enriching {match.get('match_id', '?')}: {e}")
             enriched.append({**match, "odds": {}, "has_real_odds": False,
                              "home_stats": {}, "away_stats": {}, "h2h": [],
                              "home_injuries": [], "away_injuries": []})
