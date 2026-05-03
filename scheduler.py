@@ -35,8 +35,14 @@ async def check_results(app: Application):
     for bet in pending_bets:
         try:
             # Récupérer les matchs individuels du coupon
-            c.execute('SELECT * FROM tracked_matches WHERE bet_id = ?', (bet["id"],))
-            tracked = [dict(row) for row in c.fetchall()]
+            from database import USE_POSTGRES
+            if USE_POSTGRES:
+                c.execute('SELECT * FROM tracked_matches WHERE bet_id = %s', (bet["id"],))
+                cols = [desc[0] for desc in c.description]
+                tracked = [dict(zip(cols, row)) for row in c.fetchall()]
+            else:
+                c.execute('SELECT * FROM tracked_matches WHERE bet_id = ?', (bet["id"],))
+                tracked = [dict(row) for row in c.fetchall()]
 
             all_done = True
             all_won = True
@@ -58,7 +64,8 @@ async def check_results(app: Application):
                 result = await get_fixture_result(match["match_id"])
                 status = result.get("status", "")
 
-                if status not in ["FT", "AET", "PEN"]:  # Match pas encore terminé
+                # Football-Data.org utilise FINISHED, API-Football utilise FT
+                if status not in ["FT", "AET", "PEN", "FINISHED", "AWARDED"]:
                     all_done = False
                     continue
 
@@ -68,10 +75,16 @@ async def check_results(app: Application):
                 final_score = f"{result.get('home_score', '?')}-{result.get('away_score', '?')}"
 
                 # Mettre à jour le match dans la DB
-                c.execute('''UPDATE tracked_matches 
-                             SET status=?, final_score=? 
-                             WHERE id=?''',
-                          (match_status, final_score, match["id"]))
+                if USE_POSTGRES:
+                    c.execute('''UPDATE tracked_matches
+                                 SET status=%s, final_score=%s
+                                 WHERE id=%s''',
+                              (match_status, final_score, match["id"]))
+                else:
+                    c.execute('''UPDATE tracked_matches
+                                 SET status=?, final_score=?
+                                 WHERE id=?''',
+                              (match_status, final_score, match["id"]))
 
                 results_detail.append({
                     "match": f"{match['home_team']} vs {match['away_team']}",
