@@ -1,27 +1,46 @@
 """
-Collecte de données sportives via APIs
-Données RÉELLES - 1xBet et Melbet Côte d'Ivoire
+Collecte de données sportives
+Football-Data.org (gratuit, fiable) + The Odds API (cotes 1xBet/Melbet)
 """
 import httpx
 import asyncio
 from datetime import datetime, date, timedelta
-from config import API_FOOTBALL_KEY, ODDS_API_KEY
+from config import ODDS_API_KEY
+import os
 import logging
 
 logger = logging.getLogger(__name__)
 
-API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
+FOOTBALL_DATA_KEY = os.getenv("FOOTBALL_DATA_KEY", "")
+FOOTBALL_DATA_BASE = "https://api.football-data.org/v4"
+ODDS_API_BASE = "https://api.the-odds-api.com/v4"
+
+# Compétitions disponibles sur le plan gratuit Football-Data.org
+COMPETITIONS = {
+    "PL":  "Premier League",
+    "PD":  "La Liga",
+    "BL1": "Bundesliga",
+    "SA":  "Serie A",
+    "FL1": "Ligue 1",
+    "CL":  "Champions League",
+    "EC":  "Euro",
+    "WC":  "Coupe du Monde",
+}
+
+ODDS_SPORT_KEYS = [
+    "soccer_epl",
+    "soccer_france_ligue_one",
+    "soccer_uefa_champs_league",
+]
 
 # ══════════════════════════════════════════
-#  CACHE SYSTÈME - Évite les requêtes répétées
+#  CACHE SYSTÈME
 # ══════════════════════════════════════════
 _cache = {}
-CACHE_DURATION_MINUTES = 30  # Cache matchs: 30 minutes
-CACHE_DURATION_ODDS_HOURS = 2  # Cache cotes: 2 heures
+CACHE_DURATION_MINUTES = 30
 
 
 def _get_cache(key: str, max_minutes: int = None):
-    """Retourne la valeur du cache si encore valide."""
     if max_minutes is None:
         max_minutes = CACHE_DURATION_MINUTES
     if key in _cache:
@@ -34,25 +53,8 @@ def _get_cache(key: str, max_minutes: int = None):
 
 
 def _set_cache(key: str, value):
-    """Stocke une valeur dans le cache."""
     _cache[key] = (datetime.now(), value)
     logger.info(f"💾 Cache set: {key}")
-ODDS_API_BASE = "https://api.the-odds-api.com/v4"
-
-TARGET_BOOKMAKERS = ["onexbet", "melbet"]
-
-POPULAR_LEAGUES = {
-    39: "Premier League", 140: "La Liga", 78: "Bundesliga",
-    135: "Serie A", 61: "Ligue 1", 2: "Champions League",
-    3: "Europa League", 12: "CAF Champions League", 182: "Ligue 1 CI",
-}
-
-# Seulement 3 sports populaires en CI = 3 requêtes au lieu de 8
-ODDS_SPORT_KEYS = [
-    "soccer_epl",                  # Premier League
-    "soccer_france_ligue_one",     # Ligue 1
-    "soccer_uefa_champs_league",   # Champions League
-]
 
 
 async def fetch(url, headers=None, params=None):
@@ -66,135 +68,161 @@ async def fetch(url, headers=None, params=None):
             return {}
 
 
+# ══════════════════════════════════════════
+#  MATCHS - Football-Data.org
+# ══════════════════════════════════════════
+
 async def get_matches_for_date(target_date: str) -> list:
-    """Récupère les matchs pour une date donnée (avec cache 30min)."""
+    """Récupère les matchs pour une date donnée via Football-Data.org"""
     cache_key = f"matches_{target_date}"
     cached = _get_cache(cache_key)
     if cached is not None:
         return cached
 
-    headers = {"x-apisports-key": API_FOOTBALL_KEY}
-    data = await fetch(f"{API_FOOTBALL_BASE}/fixtures", headers=headers,
-                       params={"date": target_date, "timezone": "Africa/Abidjan"})
+    headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
     matches = []
-    for fixture in data.get("response", []):
-        f = fixture["fixture"]
-        teams = fixture["teams"]
-        league = fixture["league"]
-        goals = fixture.get("goals", {})
-        matches.append({
-            "match_id": str(f["id"]),
-            "sport": "football",
-            "home_team": teams["home"]["name"],
-            "away_team": teams["away"]["name"],
-            "home_team_id": teams["home"]["id"],
-            "away_team_id": teams["away"]["id"],
-            "league": league["name"],
-            "league_id": league.get("id", 0),
-            "country": league.get("country", ""),
-            "kickoff": f["date"],
-            "status": f["status"]["short"],
-            "home_score": goals.get("home"),
-            "away_score": goals.get("away"),
-            "is_popular": league.get("id", 0) in POPULAR_LEAGUES,
-        })
+
+    for comp_code, comp_name in COMPETITIONS.items():
+        try:
+            data = await fetch(
+                f"{FOOTBALL_DATA_BASE}/competitions/{comp_code}/matches",
+                headers=headers,
+                params={"dateFrom": target_date, "dateTo": target_date}
+            )
+            for m in data.get("matches", []):
+                home = m.get("homeTeam", {})
+                away = m.get("awayTeam", {})
+                score = m.get("score", {})
+                full_time = score.get("fullTime", {})
+                status = m.get("status", "SCHEDULED")
+
+                matches.append({
+                    "match_id": str(m.get("id", "")),
+                    "sport": "football",
+                    "home_team": home.get("name", ""),
+                    "away_team": away.get("name", ""),
+                    "home_team_id": home.get("id", 0),
+                    "away_team_id": away.get("id", 0),
+                    "league": comp_name,
+                    "league_code": comp_code,
+                    "country": m.get("area", {}).get("name", ""),
+                    "kickoff": m.get("utcDate", ""),
+                    "status": status,
+                    "home_score": full_time.get("home"),
+                    "away_score": full_time.get("away"),
+                    "is_popular": True,
+                })
+            await asyncio.sleep(0.5)  # Respecter rate limit
+        except Exception as e:
+            logger.error(f"Error fetching {comp_code}: {e}")
+
+    logger.info(f"✅ {len(matches)} matchs récupérés pour {target_date}")
+    _set_cache(cache_key, matches)
     return matches
 
 
-async def get_matches_today():
-    """
-    Récupère les matchs disponibles pour parier.
-    Si peu de matchs dispo aujourd'hui (soir), prend aussi demain.
-    """
-    today = date.today().strftime("%Y-%m-%d")
-    tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
-
-    today_matches = await get_matches_for_date(today)
-
-    # Compter les matchs pas encore terminés
-    FINISHED = ["FT", "AET", "PEN", "AWD", "WO", "CANC", "ABD", "INT"]
-    available_today = [m for m in today_matches if m["status"] not in FINISHED]
-
-    all_matches = today_matches
-
-    # Si moins de 3 matchs disponibles aujourd'hui → ajouter demain
-    if len(available_today) < 3:
-        logger.info("⚠️ Peu de matchs aujourd'hui, ajout des matchs de demain...")
-        tomorrow_matches = await get_matches_for_date(tomorrow)
-        all_matches = today_matches + tomorrow_matches
-
-    logger.info(f"✅ {len(all_matches)} matchs récupérés (aujourd'hui + demain si nécessaire)")
-    return all_matches
-
-
-async def get_team_recent_form(team_id, last=5):
-    cache_key = f"form_{team_id}_{last}"
+async def get_team_recent_form(team_id: int, comp_code: str = "PL") -> dict:
+    """Récupère la forme récente d'une équipe."""
+    cache_key = f"form_{team_id}"
     cached = _get_cache(cache_key)
     if cached is not None:
         return cached
 
-    headers = {"x-apisports-key": API_FOOTBALL_KEY}
-    data = await fetch(f"{API_FOOTBALL_BASE}/fixtures", headers=headers,
-                       params={"team": team_id, "last": last, "status": "FT"})
+    headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
+    data = await fetch(
+        f"{FOOTBALL_DATA_BASE}/teams/{team_id}/matches",
+        headers=headers,
+        params={"status": "FINISHED", "limit": 5}
+    )
+
     form = ""
     goals_for, goals_against = [], []
-    for fixture in data.get("response", []):
-        teams = fixture["teams"]
-        goals = fixture["goals"]
-        is_home = teams["home"]["id"] == team_id
+
+    for m in data.get("matches", []):
+        home = m.get("homeTeam", {})
+        away = m.get("awayTeam", {})
+        score = m.get("score", {}).get("fullTime", {})
+        is_home = home.get("id") == team_id
+
         if is_home:
-            scored = goals.get("home", 0) or 0
-            conceded = goals.get("away", 0) or 0
-            won = teams["home"]["winner"]
+            scored = score.get("home", 0) or 0
+            conceded = score.get("away", 0) or 0
+            winner = m.get("score", {}).get("winner", "")
+            won = winner == "HOME_TEAM"
+            draw = winner == "DRAW"
         else:
-            scored = goals.get("away", 0) or 0
-            conceded = goals.get("home", 0) or 0
-            won = teams["away"]["winner"]
+            scored = score.get("away", 0) or 0
+            conceded = score.get("home", 0) or 0
+            winner = m.get("score", {}).get("winner", "")
+            won = winner == "AWAY_TEAM"
+            draw = winner == "DRAW"
+
         goals_for.append(scored)
         goals_against.append(conceded)
-        form += "V" if won is True else ("D" if won is False else "N")
+        form += "V" if won else ("N" if draw else "D")
+
     result = {
         "form": form,
         "goals_for_avg": round(sum(goals_for)/len(goals_for), 2) if goals_for else 1.2,
         "goals_against_avg": round(sum(goals_against)/len(goals_against), 2) if goals_against else 1.2,
     }
-    _set_cache(f"form_{team_id}_{last}", result)
+    _set_cache(f"form_{team_id}", result)
     return result
 
 
-async def get_head_to_head(team1_id, team2_id, last=5):
-    headers = {"x-apisports-key": API_FOOTBALL_KEY}
-    data = await fetch(f"{API_FOOTBALL_BASE}/fixtures/headtohead", headers=headers,
-                       params={"h2h": f"{team1_id}-{team2_id}", "last": last, "status": "FT"})
+async def get_head_to_head(team1_id: int, team2_id: int) -> list:
+    """Récupère l'historique H2H."""
+    cache_key = f"h2h_{team1_id}_{team2_id}"
+    cached = _get_cache(cache_key, max_minutes=1440)  # Cache 24h
+    if cached is not None:
+        return cached
+
+    headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
+    data = await fetch(
+        f"{FOOTBALL_DATA_BASE}/teams/{team1_id}/matches",
+        headers=headers,
+        params={"status": "FINISHED", "limit": 10}
+    )
+
     h2h = []
-    for fixture in data.get("response", []):
-        teams = fixture["teams"]
-        h2h.append({
-            "home_team_id": teams["home"]["id"],
-            "home_winner": teams["home"]["winner"],
-        })
+    for m in data.get("matches", []):
+        home_id = m.get("homeTeam", {}).get("id")
+        away_id = m.get("awayTeam", {}).get("id")
+        if team2_id in [home_id, away_id]:
+            winner = m.get("score", {}).get("winner", "")
+            h2h.append({
+                "home_team_id": home_id,
+                "home_winner": winner == "HOME_TEAM",
+            })
+
+    _set_cache(cache_key, h2h)
     return h2h
 
 
-async def get_fixture_result(fixture_id):
-    headers = {"x-apisports-key": API_FOOTBALL_KEY}
-    data = await fetch(f"{API_FOOTBALL_BASE}/fixtures", headers=headers,
-                       params={"id": fixture_id})
-    resp = data.get("response", [])
-    if resp:
-        fixture = resp[0]
+async def get_fixture_result(fixture_id: str) -> dict:
+    """Récupère le résultat d'un match terminé."""
+    headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
+    data = await fetch(f"{FOOTBALL_DATA_BASE}/matches/{fixture_id}", headers=headers)
+
+    if data:
+        score = data.get("score", {})
+        full_time = score.get("fullTime", {})
+        winner = score.get("winner", "")
         return {
-            "status": fixture["fixture"]["status"]["short"],
-            "home_score": fixture["goals"].get("home", 0),
-            "away_score": fixture["goals"].get("away", 0),
-            "home_winner": fixture["teams"]["home"]["winner"],
+            "status": data.get("status", ""),
+            "home_score": full_time.get("home", 0),
+            "away_score": full_time.get("away", 0),
+            "home_winner": winner == "HOME_TEAM",
         }
     return {}
 
 
-async def get_all_real_odds():
+# ══════════════════════════════════════════
+#  COTES - The Odds API (1xBet/Melbet)
+# ══════════════════════════════════════════
+
+async def get_all_real_odds() -> list:
     cache_key = "all_odds"
-    # Cotes: cache 2 heures (les cotes changent peu)
     cached = _get_cache(cache_key, max_minutes=120)
     if cached is not None:
         return cached
@@ -231,6 +259,7 @@ async def get_all_real_odds():
                                 match_odds["bookmakers"][bm_name]["totals"][k] = o["price"]
                 all_odds.append(match_odds)
         await asyncio.sleep(0.5)
+
     logger.info(f"✅ {len(all_odds)} événements avec cotes 1xBet/Melbet")
     _set_cache("all_odds", all_odds)
     return all_odds
@@ -254,38 +283,38 @@ def find_best_odds(odds_data, home_team, away_team):
                 away_l in ev_away or ev_away in away_l):
             continue
         for bm_name, bm_data in event.get("bookmakers", {}).items():
-            h2h = bm_data.get("h2h", {})
-            for team_name, odds in h2h.items():
-                tl = team_name.lower()
+            for team, odds_val in bm_data.get("h2h", {}).items():
+                tl = team.lower()
                 if tl in ev_home or ev_home in tl:
-                    if odds > best["1"]["odds"]:
-                        best["1"] = {"odds": odds, "bookmaker": bm_name}
+                    if odds_val > best["1"]["odds"]:
+                        best["1"] = {"odds": odds_val, "bookmaker": bm_name}
                 elif "draw" in tl:
-                    if odds > best["X"]["odds"]:
-                        best["X"] = {"odds": odds, "bookmaker": bm_name}
+                    if odds_val > best["X"]["odds"]:
+                        best["X"] = {"odds": odds_val, "bookmaker": bm_name}
                 elif tl in ev_away or ev_away in tl:
-                    if odds > best["2"]["odds"]:
-                        best["2"] = {"odds": odds, "bookmaker": bm_name}
-            for key, odds in bm_data.get("totals", {}).items():
+                    if odds_val > best["2"]["odds"]:
+                        best["2"] = {"odds": odds_val, "bookmaker": bm_name}
+            for key, odds_val in bm_data.get("totals", {}).items():
                 if "Over" in key and "2.5" in key:
-                    if odds > best["Over_2.5"]["odds"]:
-                        best["Over_2.5"] = {"odds": odds, "bookmaker": bm_name}
+                    if odds_val > best["Over_2.5"]["odds"]:
+                        best["Over_2.5"] = {"odds": odds_val, "bookmaker": bm_name}
                 elif "Under" in key and "2.5" in key:
-                    if odds > best["Under_2.5"]["odds"]:
-                        best["Under_2.5"] = {"odds": odds, "bookmaker": bm_name}
+                    if odds_val > best["Under_2.5"]["odds"]:
+                        best["Under_2.5"] = {"odds": odds_val, "bookmaker": bm_name}
     return best
 
 
 async def get_full_match_data(match, all_odds):
     home_id = match.get("home_team_id")
     away_id = match.get("away_team_id")
+
     home_form, away_form, h2h = await asyncio.gather(
         get_team_recent_form(home_id),
         get_team_recent_form(away_id),
         get_head_to_head(home_id, away_id),
     )
-    real_odds = find_best_odds(all_odds, match["home_team"], match["away_team"])
 
+    real_odds = find_best_odds(all_odds, match["home_team"], match["away_team"])
     odds_map = {}
     if real_odds["1"]["odds"] > 0:
         odds_map["1"] = real_odds["1"]["odds"]
@@ -316,10 +345,25 @@ async def get_full_match_data(match, all_odds):
     }
 
 
+async def get_matches_today():
+    today = date.today().strftime("%Y-%m-%d")
+    tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    today_matches = await get_matches_for_date(today)
+
+    FINISHED = ["FINISHED", "AWARDED", "CANCELLED", "POSTPONED"]
+    available = [m for m in today_matches if m["status"] not in FINISHED]
+
+    if len(available) < 3:
+        logger.info("⚠️ Peu de matchs aujourd'hui, ajout de demain...")
+        tomorrow_matches = await get_matches_for_date(tomorrow)
+        return today_matches + tomorrow_matches
+
+    return today_matches
+
+
 async def fetch_todays_data_with_odds():
-    # Cache global de 30 minutes pour toute la page
     cache_key = f"today_full_{date.today()}"
-    # Cache 1 heure pour les données complètes
     cached = _get_cache(cache_key, max_minutes=60)
     if cached is not None:
         return cached
@@ -327,18 +371,13 @@ async def fetch_todays_data_with_odds():
     logger.info("📡 Récupération des données du jour...")
     matches, all_odds = await asyncio.gather(get_matches_today(), get_all_real_odds())
 
-    # Limiter à 5 matchs max pour économiser les requêtes API
-    # (100 req/jour gratuit = ~5 matchs avec H2H + forme)
-    popular = [m for m in matches if m.get("is_popular")][:4]
-    other = [m for m in matches if not m.get("is_popular")][:1]
-    to_enrich = popular + other
-
+    to_enrich = matches[:5]
     enriched = []
     for match in to_enrich:
         try:
             full = await get_full_match_data(match, all_odds)
             enriched.append(full)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
         except Exception as e:
             logger.error(f"Error enriching {match['match_id']}: {e}")
             enriched.append({**match, "odds": {}, "has_real_odds": False,
@@ -348,7 +387,7 @@ async def fetch_todays_data_with_odds():
     logger.info(f"✅ {len(enriched)} matchs prêts")
     result = {"matches": enriched, "all_odds": all_odds,
               "fetched_at": datetime.now().isoformat()}
-    _set_cache(f"today_full_{date.today()}", result)
+    _set_cache(cache_key, result)
     return result
 
 
