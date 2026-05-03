@@ -308,11 +308,13 @@ async def get_full_match_data(match, all_odds):
     home_id = match.get("home_team_id")
     away_id = match.get("away_team_id")
 
-    home_form, away_form, h2h = await asyncio.gather(
-        get_team_recent_form(home_id),
-        get_team_recent_form(away_id),
-        get_head_to_head(home_id, away_id),
-    )
+    # Séquentiel pour respecter le rate limit (10 req/min)
+    home_form = await get_team_recent_form(home_id)
+    await asyncio.sleep(1)
+    away_form = await get_team_recent_form(away_id)
+    await asyncio.sleep(1)
+    h2h = await get_head_to_head(home_id, away_id)
+    await asyncio.sleep(1)
 
     real_odds = find_best_odds(all_odds, match["home_team"], match["away_team"])
     odds_map = {}
@@ -371,13 +373,13 @@ async def fetch_todays_data_with_odds():
     logger.info("📡 Récupération des données du jour...")
     matches, all_odds = await asyncio.gather(get_matches_today(), get_all_real_odds())
 
-    to_enrich = matches[:5]
+    to_enrich = matches[:3]  # Max 3 pour respecter rate limit
     enriched = []
     for match in to_enrich:
         try:
             full = await get_full_match_data(match, all_odds)
             enriched.append(full)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(6)  # 10 req/min = 1 req/6sec
         except Exception as e:
             logger.error(f"Error enriching {match['match_id']}: {e}")
             enriched.append({**match, "odds": {}, "has_real_odds": False,
