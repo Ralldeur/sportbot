@@ -75,7 +75,8 @@ async def fetch(url, headers=None, params=None):
 async def get_matches_for_date(target_date: str) -> list:
     """Récupère les matchs pour une date donnée via Football-Data.org"""
     cache_key = f"matches_{target_date}"
-    cached = _get_cache(cache_key)
+    # Cache 15 minutes pour les matchs du jour
+    cached = _get_cache(cache_key, max_minutes=15)
     if cached is not None:
         return cached
 
@@ -348,25 +349,47 @@ async def get_full_match_data(match, all_odds):
 
 
 async def get_matches_today():
-    today = date.today().strftime("%Y-%m-%d")
     tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
 
     today_matches = await get_matches_for_date(today)
 
-    FINISHED = ["FINISHED", "AWARDED", "CANCELLED", "POSTPONED"]
-    available = [m for m in today_matches if m["status"] not in FINISHED]
+    FINISHED = ["FINISHED", "AWARDED", "CANCELLED", "POSTPONED",
+                "IN_PLAY", "PAUSED", "HALFTIME"]
 
-    if len(available) < 3:
-        logger.info("⚠️ Peu de matchs aujourd'hui, ajout de demain...")
+    # Filtrer les matchs terminés ET les matchs dont l'heure est passée
+    from datetime import datetime as dt, timezone
+    now_utc = dt.now(timezone.utc)
+
+    upcoming = []
+    for m in today_matches:
+        if m["status"] in FINISHED:
+            continue
+        try:
+            kickoff = dt.fromisoformat(m["kickoff"].replace("Z", "+00:00"))
+            if kickoff > now_utc:  # Seulement les matchs futurs
+                upcoming.append(m)
+        except Exception:
+            if m["status"] not in FINISHED:
+                upcoming.append(m)
+
+    if len(upcoming) < 3:
+        logger.info("⚠️ Peu de matchs à venir aujourd'hui, ajout de demain...")
         tomorrow_matches = await get_matches_for_date(tomorrow)
-        return today_matches + tomorrow_matches
+        tomorrow_upcoming = []
+        for m in tomorrow_matches:
+            if m["status"] not in FINISHED:
+                tomorrow_upcoming.append(m)
+        return upcoming + tomorrow_upcoming
 
-    return today_matches
+    return upcoming
 
 
 async def fetch_todays_data_with_odds():
-    cache_key = f"today_full_{date.today()}"
-    cached = _get_cache(cache_key, max_minutes=60)
+    # Cache basé sur l'heure (se renouvelle toutes les 15 minutes)
+    from datetime import datetime as _dt
+    slot = _dt.now().minute // 15
+    cache_key = f"today_full_{date.today()}_{_dt.now().hour}_{slot}"
+    cached = _get_cache(cache_key, max_minutes=15)
     if cached is not None:
         return cached
 
