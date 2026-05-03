@@ -4,7 +4,7 @@ Données RÉELLES - 1xBet et Melbet Côte d'Ivoire
 """
 import httpx
 import asyncio
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from config import API_FOOTBALL_KEY, ODDS_API_KEY
 import logging
 
