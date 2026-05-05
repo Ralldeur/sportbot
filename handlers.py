@@ -4,7 +4,7 @@ Handlers Telegram - Commandes et interactions
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
-from database import register_user, save_bet, get_user_bets, get_user_stats
+from database import register_user, save_bet, get_user_bets, get_user_stats, delete_user_bets, delete_single_bet
 from prediction_engine import engine, Prediction
 from data_fetcher import fetch_todays_data_with_odds, format_kickoff
 from config import RISK_WARNING, RISK_LEVELS
@@ -781,6 +781,49 @@ def _generate_mock_matches_pool(n: int) -> list:
             ])
         })
     return matches
+
+
+async def clearhistory_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Supprime tout l'historique de l'utilisateur."""
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    user_id = update.effective_user.id
+
+    keyboard = [
+        [InlineKeyboardButton("🗑️ Oui, tout supprimer", callback_data="confirm_clear"),
+         InlineKeyboardButton("❌ Annuler", callback_data="cancel_clear")]
+    ]
+    await msg.reply_text(
+        "⚠️ *Es-tu sûr de vouloir supprimer tout ton historique ?*\n\n"
+        "Cette action est irréversible !",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def delete_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Supprime un coupon spécifique."""
+    msg = update.message
+    args = context.args
+    user_id = update.effective_user.id
+
+    if not args:
+        await msg.reply_text(
+            "Usage: `/deletecoupon [numéro]`\nEx: `/deletecoupon 3`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    try:
+        bet_id = int(args[0])
+        delete_single_bet(user_id, bet_id)
+        await msg.reply_text(
+            f"✅ Coupon #{bet_id} supprimé !\n\n"
+            f"Utilise /historique pour voir tes coupons restants.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except ValueError:
+        await msg.reply_text("❌ Entre un numéro valide. Ex: `/deletecoupon 3`",
+                             parse_mode=ParseMode.MARKDOWN)
 
 async def save_combo_handler(query, context: ContextTypes.DEFAULT_TYPE):
     """Sauvegarde le dernier combiné généré en base de données."""

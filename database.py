@@ -348,3 +348,43 @@ def get_pending_bets() -> list:
         return []
     finally:
         conn.close()
+
+
+def delete_user_bets(user_id: int):
+    """Supprime tous les coupons d'un utilisateur."""
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        if USE_POSTGRES:
+            c.execute("DELETE FROM tracked_matches WHERE bet_id IN (SELECT id FROM bets WHERE user_id = %s)", (user_id,))
+            c.execute("DELETE FROM bets WHERE user_id = %s", (user_id,))
+        else:
+            c.execute("DELETE FROM tracked_matches WHERE bet_id IN (SELECT id FROM bets WHERE user_id = ?)", (user_id,))
+            c.execute("DELETE FROM bets WHERE user_id = ?", (user_id,))
+        conn.commit()
+        logger.info(f"Historique supprimé pour user {user_id}")
+    except Exception as e:
+        logger.error(f"Error delete_user_bets: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def delete_single_bet(user_id: int, bet_id: int):
+    """Supprime un coupon spécifique."""
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        if USE_POSTGRES:
+            c.execute("DELETE FROM tracked_matches WHERE bet_id = %s", (bet_id,))
+            c.execute("DELETE FROM bets WHERE id = %s AND user_id = %s", (bet_id, user_id))
+        else:
+            c.execute("DELETE FROM tracked_matches WHERE bet_id = ?", (bet_id,))
+            c.execute("DELETE FROM bets WHERE id = ? AND user_id = ?", (bet_id, user_id))
+        conn.commit()
+        logger.info(f"Coupon #{bet_id} supprimé")
+    except Exception as e:
+        logger.error(f"Error delete_single_bet: {e}")
+        conn.rollback()
+    finally:
+        conn.close()

@@ -14,7 +14,8 @@ from config import BOT_TOKEN, ADMIN_ID
 from handlers import (
     start_handler, today_handler, bestbets_handler,
     safe_handler, explain_handler, customodds_handler,
-    history_handler, stats_handler
+    history_handler, stats_handler,
+    clearhistory_handler, delete_bet_handler
 )
 from scheduler import setup_scheduler
 from database import init_db
@@ -47,6 +48,8 @@ def main():
     app.add_handler(CommandHandler("customodds", customodds_handler))
     app.add_handler(CommandHandler("historique", history_handler))
     app.add_handler(CommandHandler("stats", stats_handler))
+    app.add_handler(CommandHandler("clearhistory", clearhistory_handler))
+    app.add_handler(CommandHandler("deletecoupon", delete_bet_handler))
 
     # Callbacks pour les boutons
     app.add_handler(CallbackQueryHandler(button_callback))
@@ -105,6 +108,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "save_combo":
         from handlers import save_combo_handler
         await save_combo_handler(query, context)
+    elif data == "confirm_clear":
+        from database import delete_user_bets
+        from handlers import delete_user_bets as _
+        user_id = query.from_user.id
+        delete_user_bets(user_id)
+        await query.message.reply_text(
+            "🗑️ *Historique supprimé !*\n\n"
+            "Tous tes coupons ont été effacés.",
+            parse_mode="Markdown"
+        )
+    elif data == "cancel_clear":
+        await query.message.reply_text("✅ Suppression annulée.")
 
 
 if __name__ == "__main__":
