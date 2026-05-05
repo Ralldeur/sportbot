@@ -233,25 +233,35 @@ def setup_scheduler(app: Application):
     """Configure toutes les tâches planifiées."""
     job_queue = app.job_queue
 
+    # Callback async correct pour python-telegram-bot
+    async def morning_briefing_job(context):
+        await send_morning_briefing(app)
+
+    async def check_results_job(context):
+        await check_results(app)
+
+    async def odds_alerts_job(context):
+        await send_odds_change_alerts(app)
+
     # Briefing matinal à 8h00 (heure Abidjan = UTC+0)
     job_queue.run_daily(
-        lambda ctx: asyncio.create_task(send_morning_briefing(app)),
+        morning_briefing_job,
         time=datetime.strptime("08:00", "%H:%M").time(),
         name="morning_briefing"
     )
 
     # Vérification des résultats toutes les 30 minutes
     job_queue.run_repeating(
-        lambda ctx: asyncio.create_task(check_results(app)),
+        check_results_job,
         interval=1800,  # 30 minutes
-        first=60,       # Première exécution après 60 secondes
+        first=60,
         name="check_results"
     )
 
     # Alertes cotes toutes les 2 heures
     job_queue.run_repeating(
-        lambda ctx: asyncio.create_task(send_odds_change_alerts(app)),
-        interval=7200,  # 2 heures
+        odds_alerts_job,
+        interval=7200,
         first=120,
         name="odds_alerts"
     )
