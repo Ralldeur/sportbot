@@ -61,7 +61,37 @@ async def check_results(app: Application):
                     continue
 
                 # Vérifier si le match est terminé
-                result = await get_fixture_result(match["match_id"])
+                match_id = match["match_id"]
+
+                # Si ID non numérique (ex: "odds_Chelsea_Nottingham")
+                # on ne peut pas vérifier le résultat sans vrai ID Football-Data
+                if not str(match_id).isdigit():
+                    try:
+                        from datetime import datetime as dt, timezone
+                        kickoff_str = match.get("kickoff", "")
+                        if kickoff_str:
+                            kickoff = dt.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+                            now = dt.now(timezone.utc)
+                            # Si le match est passé depuis plus de 2h → supposer terminé
+                            from datetime import timedelta
+                            if now > kickoff + timedelta(hours=2):
+                                logger.info(f"Match {match_id} supposé terminé (ID non numérique)")
+                                # On ne peut pas savoir le résultat sans ID
+                                # On laisse en pending pour suivi manuel
+                                all_done = False
+                                continue
+                            else:
+                                all_done = False
+                                continue
+                        else:
+                            all_done = False
+                            continue
+                    except Exception as ex:
+                        logger.error(f"Error checking kickoff: {ex}")
+                        all_done = False
+                        continue
+
+                result = await get_fixture_result(str(match_id))
                 status = result.get("status", "")
 
                 # Football-Data.org utilise FINISHED, API-Football utilise FT
@@ -73,6 +103,7 @@ async def check_results(app: Application):
                 match_result = _evaluate_selection(match["selection"], result)
                 match_status = "won" if match_result else "lost"
                 final_score = f"{result.get('home_score', '?')}-{result.get('away_score', '?')}"
+
 
                 # Mettre à jour le match dans la DB
                 if USE_POSTGRES:
