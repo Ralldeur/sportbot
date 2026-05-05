@@ -349,6 +349,7 @@ async def get_full_match_data(match, all_odds):
 
 
 async def get_matches_today():
+    today = date.today().strftime("%Y-%m-%d")
     tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
 
     today_matches = await get_matches_for_date(today)
@@ -366,7 +367,7 @@ async def get_matches_today():
             continue
         try:
             kickoff = dt.fromisoformat(m["kickoff"].replace("Z", "+00:00"))
-            if kickoff > now_utc:  # Seulement les matchs futurs
+            if kickoff > now_utc:
                 upcoming.append(m)
         except Exception:
             if m["status"] not in FINISHED:
@@ -382,7 +383,6 @@ async def get_matches_today():
         return upcoming + tomorrow_upcoming
 
     return upcoming
-
 
 async def fetch_todays_data_with_odds():
     # Cache basé sur l'heure (se renouvelle toutes les 15 minutes)
